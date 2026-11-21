@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rescue the Surplus</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #f5f7f4; color: #1d2b1f; display: flex; flex-direction: column; min-height: 100vh; }
+  header { background: #2e7d4f; color: #fff; padding: 16px 24px; }
+  header h1 { margin: 0 0 12px; font-size: 1.5rem; }
+  .roles { display: flex; gap: 8px; }
+  .role-btn { background: transparent; color: #fff; border: 2px solid #fff; border-radius: 999px; padding: 6px 16px; cursor: pointer; font: inherit; }
+  .role-btn.active { background: #fff; color: #2e7d4f; font-weight: 600; }
+  main { flex: 1; width: 100%; max-width: 960px; margin: 0 auto; padding: 24px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .grid .card { margin-bottom: 0; }
+  h2 { margin-top: 0; font-size: 1.2rem; }
+  h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  p { margin: 4px 0; font-size: 0.92rem; }
+  form label { display: block; margin-bottom: 10px; font-weight: 600; font-size: 0.92rem; }
+  input[type=text], input[type=number], input[type=datetime-local], select { width: 100%; padding: 8px; margin-top: 4px; border: 1px solid #bbb; border-radius: 4px; font: inherit; }
+  .row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  fieldset { border: 1px solid #ddd; border-radius: 4px; margin: 0 0 10px; padding: 8px 12px; }
+  fieldset label { display: inline-block; font-weight: normal; margin-right: 12px; }
+  .error { display: block; color: #b00020; font-size: 0.82rem; min-height: 1em; font-weight: 400; }
+  .countdown { font-weight: 600; color: #2e7d4f; }
+  .countdown.closed { color: #b00020; }
+  .status { font-weight: 600; color: #555; }
+  .primary { background: #2e7d4f; color: #fff; border: none; border-radius: 4px; padding: 8px 14px; cursor: pointer; font: inherit; margin-top: 4px; }
+  .primary:hover { background: #256640; }
+  footer { background: #e3ebe4; padding: 12px 24px; text-align: center; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rescue the Surplus</h1>
+  <div class="roles" role="group" aria-label="Switch role">
+    <button class="role-btn active" data-role="donor" aria-pressed="true">Donor</button>
+    <button class="role-btn" data-role="receiver" aria-pressed="false">Receiver</button>
+    <button class="role-btn" data-role="volunteer" aria-pressed="false">Volunteer</button>
+  </div>
+</header>
+
+<main id="view"></main>
+
+<footer>This platform connects people and does not certify food safety.</footer>
+
+<script>
+  // ---- Smart matching settings: edit these to tune the scoring ----
+  // Weight of each score component (0..1). The four weights must sum to 1.
+  const WEIGHTS = { distance: 0.35, fit: 0.25, time: 0.20, need: 0.20 };
+  // Distance at or beyond this many km scores 0 on distance.
+  const MAX_DISTANCE_KM = 10;
+  // Converts one grid unit (the x/y coordinates in DONORS and RECEIVERS) to km.
+  // The grid is about 8 x 7 units, so 1.2 km per unit makes the city roughly 10 km across.
+  const KM_PER_GRID_UNIT = 1.2;
+  // Converts a kg listing to meals when comparing it with receiver capacity.
+  const MEALS_PER_KG = 2;
+  // Hours left at or above this value earn full time points.
+  const TIME_FULL_SCORE_HOURS = 6;
+  // Number of top-scoring receivers shown on each open listing.
+  const TOP_MATCH_COUNT = 3;
+
+  const HOUR = 60 * 60 * 1000;
+  const MIN = 60 * 1000;
+  const ALLERGENS = ['nuts', 'dairy', 'gluten', 'eggs', 'soy', 'none'];
+
+  // Scores one receiver for one listing, each component in 0..1, combined to 0..100.
+  function scoreMatch(listing, receiver) {
+    const donor = DONORS.find((d) => d.id === listing.donorId);
+    const dx = donor.location.x - receiver.location.x;
+    const dy = donor.location.y - receiver.location.y;
+    const dKm = Math.sqrt(dx * dx + dy * dy) * KM_PER_GRID_UNIT;
+    const distanceScore = Math.max(0, 1 - dKm / MAX_DISTANCE_KM);
+
+    const listingMeals = listing.unit === 'kg' ? listing.quantity * MEALS_PER_KG : listing.quantity;
+    const fitScore = Math.min(listingMeals, receiver.capacity) / Math.max(listingMeals, receiver.capacity);
+
+    const hoursLeft = (listing.pickupBy - Date.now()) / HOUR;
+    const timeScore = Math.min(1, Math.max(0, hoursLeft / TIME_FULL_SCORE_HOURS));
+
+    const needScore = (receiver.need - 1) / 4;
+
+    const raw = WEIGHTS.distance * distanceScore
+      + WEIGHTS.fit * fitScore
+      + WEIGHTS.time * timeScore
+      + WEIGHTS.need * needScore;
+    const score = Math.min(100, Math.max(0, Math.round(100 * raw)));
+    return { receiver, score, dKm, listingMeals, hoursLeft };
+  }
+
+  // Fictional city grid: each location is a grid label plus x/y coordinates.
+  const DONORS = [
+    { id: 1, name: 'Saffron Caterers', kind: 'Caterer', location: { grid: 'C3', x: 3, y: 4 } },
+    { id: 2, name: 'Lotus Function Hall', kind: 'Function hall', location: { grid: 'F1', x: 6, y: 1 } },
+    { id: 3, name: 'Maple Banquet Hall', kind: 'Function hall', location: { grid: 'B5', x: 2, y: 5 } },
+    { id: 4, name: 'Annapurna Catering Co.', kind: 'Caterer', location: { grid: 'D2', x: 4, y: 2 } },
+    { id: 5, name: 'Silver Oak Events', kind: 'Caterer', location: { grid: 'G6', x: 7, y: 6 } },
+    { id: 6, name: 'Jasmine Garden Hall', kind: 'Function hall', location: { grid: 'E4', x: 5, y: 4 } },
+  ];
+
+  const RECEIVERS = [
+    { id: 1, name: 'Hope Foundation', kind: 'NGO', location: { grid: 'A1', x: 1, y: 1 }, capacity: 60, need: 5 },
+    { id: 2, name: 'Annadaan Community Kitchen', kind: 'Community kitchen', location: { grid: 'B3', x: 2, y: 3 }, capacity: 120, need: 4 },
+    { id: 3, name: 'Sahyog Trust', kind: 'NGO', location: { grid: 'E7', x: 5, y: 7 }, capacity: 25, need: 3 },
+    { id: 4, name: 'Nanhe Kadam Kitchen', kind: 'Community kitchen', location: { grid: 'G2', x: 7, y: 2 }, capacity: 90, need: 2 },
+    { id: 5, name: 'Asha Seva Samiti', kind: 'NGO', location: { grid: 'H5', x: 8, y: 5 }, capacity: 40, need: 1 },
+  ];
+
+  // Pickup times are offsets from Date.now() at load; negative = already past.
+  function sampleListings() {
+    const now = Date.now();
+    const spec = [
+      { donorId: 1, foodType: 'Paneer tikka & naan', quantity: 40, unit: 'meals', offset: 150 * MIN, allergens: ['dairy', 'gluten'], storageNote: 'Hot-held in chafing dishes' },
+      { donorId: 2, foodType: 'Dal, rice & salad', quantity: 25, unit: 'kg', offset: 4 * HOUR, allergens: ['none'], storageNote: 'Sealed steel containers, keep covered' },
+      { donorId: 3, foodType: 'Vegetable biryani', quantity: 60, unit: 'meals', offset: 75 * MIN, allergens: ['dairy'], storageNote: 'Foil trays, refrigerate on arrival' },
+      { donorId: 4, foodType: 'Mithai sweets box', quantity: 10, unit: 'kg', offset: 3 * HOUR, allergens: ['dairy', 'nuts'], storageNote: 'Boxed, room temperature is fine' },
+      { donorId: 5, foodType: 'Bread rolls & butter', quantity: 30, unit: 'meals', offset: 20 * MIN, allergens: ['gluten', 'dairy'], storageNote: 'Wrapped, no refrigeration needed' },
+      { donorId: 6, foodType: 'Samosas & chutney', quantity: 50, unit: 'meals', offset: -15 * MIN, allergens: ['gluten'], storageNote: 'Fried snacks, best eaten same day' },
+      { donorId: 1, foodType: 'Fresh fruit platter', quantity: 8, unit: 'kg', offset: 5 * HOUR, allergens: ['none'], storageNote: 'Keep chilled' },
+      { donorId: 5, foodType: 'Egg fried rice & soup', quantity: 35, unit: 'meals', offset: 5.75 * HOUR, allergens: ['eggs', 'soy'], storageNote: 'Hot packs in bag' },
+    ];
+    return spec.map((s, i) => ({
+      id: i + 1,
+      donorId: s.donorId,
+      foodType: s.foodType,
+      quantity: s.quantity,
+      unit: s.unit,
+      pickupBy: now + s.offset,
+      allergens: s.allergens,
+      storageNote: s.storageNote,
+      claimedBy: null,
+      volunteered: false,
+    }));
+  }
+
+  const state = {
+    role: 'donor',
+    listings: sampleListings(),
+    nextId: 9,
+    receiverId: null,
+  };
+
+  const view = document.getElementById('view');
+  let timer = null;
+
+  const esc = (value) => String(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const pad = (n) => String(n).padStart(2, '0');
+  const findById = (list, id) => list.find((item) => item.id === id);
+  const fmtLoc = (loc) => `Grid ${loc.grid} (x ${loc.x}, y ${loc.y})`;
+  const isOpen = (l) => !l.claimedBy && l.pickupBy > Date.now();
+
+  function formatLeft(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h}h ${pad(m)}m ${pad(s)}s left`;
+  }
+
+  function statusText(l) {
+    if (l.claimedBy) return `Claimed by ${esc(findById(RECEIVERS, l.claimedBy).name)}`;
+    if (l.volunteered) return 'Volunteer picking up';
+    return 'Unclaimed';
+  }
+
+  function formatHoursLeft(hours) {
+    return hours < 1 ? `${Math.floor(hours * 60)}m left` : `${Math.floor(hours)}h left`;
+  }
+
+  // Top-scoring receivers for an open listing, rendered as a small block.
+  function matchesHtml(l) {
+    const top = RECEIVERS.map((r) => scoreMatch(l, r))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, TOP_MATCH_COUNT);
+    const items = top.map((m) => {
+      const reason = `${m.dKm.toFixed(1)} km away, can take ${m.receiver.capacity} meals, ${formatHoursLeft(m.hoursLeft)}`;
+      return `<li><strong>${esc(m.receiver.name)}</strong> &middot; ${m.score}/100<br><small>${esc(reason)}</small></li>`;
+    }).join('');
+    return `
+      <div class="matches" data-match-until="${l.pickupBy}">
+        <p><strong>Top matches</strong></p>
+        <ol>${items}</ol>
+      </div>`;
+  }
+
+  function listingCard(l, actionHtml) {
+    const donor = findById(DONORS, l.donorId);
+    // Matches only for open listings; closed or already-volunteered ones show none.
+    const matches = isOpen(l) && !l.volunteered ? matchesHtml(l) : '';
+    return `
+      <article class="card">
+        <h3>${esc(l.foodType)} &mdash; ${esc(l.quantity)} ${esc(l.unit)}</h3>
+        <p>From ${esc(donor.name)} (${esc(donor.kind)})</p>
+        <p>${esc(fmtLoc(donor.location))}</p>
+        <p>Allergens: ${l.allergens.map(esc).join(', ')}</p>
+        ${l.storageNote ? `<p>Storage: ${esc(l.storageNote)}</p>` : ''}
+        <p>Pickup by ${esc(new Date(l.pickupBy).toLocaleString())}</p>
+        <p><span class="countdown" data-deadline="${l.pickupBy}"></span></p>
+        <p class="status">${statusText(l)}</p>
+        ${matches}
+        ${actionHtml}
+      </article>`;
+  }
+
+  function renderDonor() {
+    const donorOptions = DONORS.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    const allergenBoxes = ALLERGENS.map((a) => `<label><input type="checkbox" name="allergens" value="${a}"> ${a}</label>`).join('');
+    const cards = state.listings.map((l) => listingCard(l, '')).join('');
+    return `
+      <section class="card">
+        <h2>Post surplus food</h2>
+        <form id="donor-form" novalidate>
+          <div class="row">
+            <label>Food type
+              <input type="text" name="foodType" placeholder="e.g. Paneer curry">
+              <span class="error" data-error="foodType"></span>
+            </label>
+            <label>Donor
+              <select name="donorId">${donorOptions}</select>
+            </label>
+          </div>
+          <div class="row">
+            <label>Quantity
+              <input type="number" name="quantity" min="0" step="any">
+              <span class="error" data-error="quantity"></span>
+            </label>
+            <label>Unit
+              <select name="unit"><option value="meals">meals</option><option value="kg">kg</option></select>
+            </label>
+          </div>
+          <label>Pickup-by time
+            <input type="datetime-local" name="pickupBy">
+            <span class="error" data-error="pickupBy"></span>
+          </label>
+          <fieldset>
+            <legend>Allergens</legend>
+            ${allergenBoxes}
+          </fieldset>
+          <label>Storage note
+            <input type="text" name="storageNote" placeholder="e.g. Keep covered, refrigerate">
+          </label>
+          <button type="submit" class="primary">Post listing</button>
+        </form>
+      </section>
+      <h2>All listings</h2>
+      <div class="grid">${cards}</div>`;
+  }
+
+  function renderReceiver() {
+    const options = RECEIVERS.map((r) => `<option value="${r.id}"${r.id === state.receiverId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
+    const cards = state.listings.map((l) => {
+      const action = isOpen(l)
+        ? `<button class="primary" data-action="claim" data-id="${l.id}">Claim</button>`
+        : '';
+      return listingCard(l, action);
+    }).join('');
+    return `
+      <section class="card">
+        <label>Claiming as
+          <select id="receiver-select"><option value="">Choose a receiver&hellip;</option>${options}</select>
+        </label>
+        <span class="error" id="claim-msg"></span>
+      </section>
+      <div class="grid">${cards}</div>`;
+  }
+
+  function renderVolunteer() {
+    const cards = state.listings
+      .filter((l) => isOpen(l))
+      .map((l) => {
+        const action = l.volunteered
+          ? ''
+          : `<button class="primary" data-action="volunteer" data-id="${l.id}">Volunteer picking up</button>`;
+        return listingCard(l, action);
+      })
+      .join('');
+    return `<div class="grid">${cards || '<p>No open listings right now.</p>'}</div>`;
+  }
+
+  const VIEWS = { donor: renderDonor, receiver: renderReceiver, volunteer: renderVolunteer };
+
+  function tickCountdowns() {
+    const now = Date.now();
+    // Drop match blocks once their pickup window has passed, without a full re-render.
+    document.querySelectorAll('[data-match-until]').forEach((el) => {
+      if (Number(el.dataset.matchUntil) <= now) el.remove();
+    });
+    document.querySelectorAll('[data-deadline]').forEach((el) => {
+      const left = Number(el.dataset.deadline) - now;
+      el.textContent = left <= 0 ? 'Pickup window closed' : formatLeft(left);
+      el.classList.toggle('closed', left <= 0);
+    });
+  }
+
+  function render() {
+    document.querySelectorAll('.role-btn').forEach((b) => {
+      const active = b.dataset.role === state.role;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', String(active));
+    });
+    view.innerHTML = VIEWS[state.role]();
+    // One interval at a time: rebuild on every render so none leak.
+    clearInterval(timer);
+    tickCountdowns();
+    timer = setInterval(tickCountdowns, 1000);
+  }
+
+  function handleDonorSubmit(form) {
+    const data = new FormData(form);
+    const foodType = data.get('foodType').trim();
+    const quantity = Number(data.get('quantity'));
+    const pickupValue = data.get('pickupBy');
+    const pickupBy = new Date(pickupValue).getTime();
+
+    const errors = {
+      foodType: foodType ? '' : 'Food type is required.',
+      quantity: quantity > 0 ? '' : 'Quantity must be greater than 0.',
+      pickupBy: pickupValue && !Number.isNaN(pickupBy) ? '' : 'Pickup-by time is required.',
+    };
+    let valid = true;
+    form.querySelectorAll('[data-error]').forEach((el) => {
+      const message = errors[el.dataset.error];
+      el.textContent = message;
+      if (message) valid = false;
+    });
+    if (!valid) return;
+
+    const allergens = data.getAll('allergens');
+    state.listings.push({
+      id: state.nextId++,
+      donorId: Number(data.get('donorId')),
+      foodType,
+      quantity,
+      unit: data.get('unit'),
+      pickupBy,
+      allergens: allergens.length ? allergens : ['none'],
+      storageNote: data.get('storageNote').trim(),
+      claimedBy: null,
+      volunteered: false,
+    });
+    render();
+  }
+
+  document.querySelector('.roles').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-role]');
+    if (!btn) return;
+    state.role = btn.dataset.role;
+    render();
+  });
+
+  view.addEventListener('submit', (e) => {
+    if (e.target.id !== 'donor-form') return;
+    e.preventDefault();
+    handleDonorSubmit(e.target);
+  });
+
+  view.addEventListener('change', (e) => {
+    if (e.target.id === 'receiver-select') {
+      state.receiverId = Number(e.target.value) || null;
+    }
+  });
+
+  view.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const listing = findById(state.listings, Number(btn.dataset.id));
+    if (!listing) return;
+
+    if (btn.dataset.action === 'claim') {
+      const msg = document.getElementById('claim-msg');
+      if (!state.receiverId) {
+        msg.textContent = 'Choose a receiver first.';
+        return;
+      }
+      listing.claimedBy = state.receiverId;
+    } else if (btn.dataset.action === 'volunteer') {
+      listing.volunteered = true;
+    }
+    render();
+  });
+
+  render();
+</script>
+</body>
+</html>
