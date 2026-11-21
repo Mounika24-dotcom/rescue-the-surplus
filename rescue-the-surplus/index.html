@@ -194,14 +194,16 @@
     const now = Date.now();
     const spec = [
       { donorId: 1, foodType: 'Paneer tikka & naan', quantity: 40, unit: 'meals', offset: 150 * MIN, allergens: ['dairy', 'gluten'], storageNote: 'Hot-held in chafing dishes', category: 'Cooked food' },
-      { donorId: 2, foodType: 'Dal, rice & salad', quantity: 25, unit: 'kg', offset: 4 * HOUR, allergens: ['none'], storageNote: 'Sealed steel containers, keep covered', category: 'Cooked food' },
+      { donorId: 2, foodType: 'Dal, rice & salad', quantity: 25, unit: 'kg', offset: 165 * MIN, allergens: ['none'], storageNote: 'Sealed steel containers, keep covered', category: 'Cooked food' },
       { donorId: 3, foodType: 'Vegetable biryani', quantity: 60, unit: 'meals', offset: 75 * MIN, allergens: ['dairy'], storageNote: 'Foil trays, refrigerate on arrival', category: 'Cooked food' },
       { donorId: 4, foodType: 'Mithai sweets box', quantity: 10, unit: 'kg', offset: 3 * HOUR, allergens: ['dairy', 'nuts'], storageNote: 'Boxed, room temperature is fine', category: 'Dry or packaged' },
-      { donorId: 5, foodType: 'Bread rolls & butter', quantity: 30, unit: 'meals', offset: 20 * MIN, allergens: ['gluten', 'dairy'], storageNote: 'Wrapped, no refrigeration needed', category: 'Dry or packaged' },
+      { donorId: 5, foodType: 'Bread rolls & butter', quantity: 30, unit: 'meals', offset: 20 * MIN, postedOffset: -3.5 * HOUR, consumeWithin: 4, allergens: ['gluten', 'dairy'], storageNote: 'Wrapped, no refrigeration needed', category: 'Dry or packaged' },
       { donorId: 6, foodType: 'Samosas & chutney', quantity: 50, unit: 'meals', offset: -15 * MIN, allergens: ['gluten'], storageNote: 'Fried snacks, best eaten same day', category: 'Cooked food' },
-      { donorId: 1, foodType: 'Fresh fruit platter', quantity: 8, unit: 'kg', offset: 5 * HOUR, allergens: ['none'], storageNote: 'Keep chilled', category: 'Cooked food' },
-      { donorId: 5, foodType: 'Egg fried rice & soup', quantity: 35, unit: 'meals', offset: 5.75 * HOUR, allergens: ['eggs', 'soy'], storageNote: 'Hot packs in bag', category: 'Cooked food' },
+      { donorId: 1, foodType: 'Fresh fruit platter', quantity: 8, unit: 'kg', offset: 140 * MIN, allergens: ['none'], storageNote: 'Keep chilled', category: 'Cooked food' },
+      { donorId: 5, foodType: 'Egg fried rice & soup', quantity: 35, unit: 'meals', offset: 135 * MIN, allergens: ['eggs', 'soy'], storageNote: 'Hot packs in bag', category: 'Cooked food' },
     ];
+    const claimedPostedAt = now - 40 * MIN;
+    const claimedReceiverName = RECEIVERS.find((r) => r.id === 1).name;
     return spec.map((s, i) => ({
       id: i + 1,
       donorId: s.donorId,
@@ -212,11 +214,29 @@
       allergens: s.allergens,
       storageNote: s.storageNote,
       foodCategory: s.category,
-      consumeWithinHours: FOOD_CATEGORIES[s.category],
+      consumeWithinHours: s.consumeWithin ?? FOOD_CATEGORIES[s.category],
       status: 'posted',
+      sample: true,
       history: [],
-      postedAt: now - (10 + i * 5) * MIN,
-    }));
+      postedAt: now + (s.postedOffset ?? -(10 + i * 5) * MIN),
+    })).concat([{
+      id: 19,
+      donorId: 1,
+      foodType: 'Veg biryani',
+      quantity: 30,
+      unit: 'meals',
+      pickupBy: claimedPostedAt + 150 * MIN,
+      allergens: ['none'],
+      storageNote: 'Hot-held in chafing dishes; refrigerate on receipt',
+      foodCategory: 'Cooked food',
+      consumeWithinHours: 4,
+      status: 'claimed',
+      sample: true,
+      postedAt: claimedPostedAt,
+      history: [
+        { step: 'claimed', by: claimedReceiverName, at: claimedPostedAt + 20 * MIN },
+      ],
+    }]);
   }
 
   // Ten delivered sample listings from the last 30 days, with history. Ids 9-18.
@@ -239,6 +259,8 @@
     return spec.map((s, i) => {
       const [donorId, foodType, quantity, unit, daysAgo, receiverId, volunteerId, allergens, storageNote, category] = s;
       const deliveredAt = now - daysAgo * DAY;
+      // Timeline offsets from posting: claimed +20 min, collected +45 min, delivered +80 min.
+      const postedAt = deliveredAt - 80 * MIN;
       const receiverName = RECEIVERS.find((r) => r.id === receiverId).name;
       const volunteerName = VOLUNTEERS.find((v) => v.id === volunteerId).name;
       return {
@@ -247,17 +269,17 @@
         foodType,
         quantity,
         unit,
-        pickupBy: deliveredAt - HOUR,
+        pickupBy: postedAt + 60 * MIN,
         allergens,
         storageNote,
         foodCategory: category,
         consumeWithinHours: FOOD_CATEGORIES[category],
         status: 'delivered',
         sample: true,
-        postedAt: deliveredAt - 6 * HOUR,
+        postedAt,
         history: [
-          { step: 'claimed', by: receiverName, at: deliveredAt - 4 * HOUR },
-          { step: 'collected', by: volunteerName, at: deliveredAt - 2 * HOUR },
+          { step: 'claimed', by: receiverName, at: postedAt + 20 * MIN },
+          { step: 'collected', by: volunteerName, at: postedAt + 45 * MIN },
           { step: 'delivered', by: volunteerName, at: deliveredAt },
         ],
       };
@@ -267,7 +289,7 @@
   const state = {
     role: 'donor',
     listings: sampleListings().concat(sampleDeliveredListings()),
-    nextId: 19,
+    nextId: 20,
     receiverId: null,
     volunteerId: null,
   };
@@ -343,21 +365,29 @@
 
 
   // Safety box for every listing card: consume-within window, storage, allergens, and an amber warning
-  // when less than 1 hour of the window remains at pickup-by.
+  // when less than 60 minutes of the window remains at pickup-by.
   function safetyHtml(l) {
     const eatBy = (l.postedAt ?? l.pickupBy) + l.consumeWithinHours * HOUR;
-    const remainingHours = (eatBy - l.pickupBy) / HOUR;
-    const eatByText = new Date(eatBy).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const remainingMs = eatBy - l.pickupBy;
+    const eatByDate = new Date(eatBy);
+    const today = new Date();
+    const dayDiff = Math.round((new Date(eatByDate.getFullYear(), eatByDate.getMonth(), eatByDate.getDate()) - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / (24 * HOUR));
+    const clock = eatByDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const eatByText = dayDiff === 0
+      ? clock
+      : dayDiff === 1
+        ? `tomorrow ${clock}`
+        : `${eatByDate.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${clock}`;
     const named = l.allergens.filter((a) => a !== 'none');
     const allergenLine = named.length
       ? `Allergen warning: contains ${named.map(esc).join(', ')}. Check with the donor.`
       : 'Allergen warning: none declared by donor. Check with the donor.';
-    let warning = '';
-    if (remainingHours <= 0) {
-      warning = '<p class="safety-warning">Consume-within time has passed by pickup-by.</p>';
-    } else if (remainingHours < 1) {
-      warning = '<p class="safety-warning">Less than 1 hour of the consume-within time remains at pickup-by.</p>';
-    }
+    // Amber warning only while the listing is still open (posted, claimed or collected), never on delivered or expired ones.
+    const isOpenStatus = ['posted', 'claimed', 'collected'].includes(displayStatus(l));
+    const remainingMin = Math.max(0, Math.round(remainingMs / MIN));
+    const warning = isOpenStatus && remainingMs < 60 * MIN
+      ? `<p class="safety-warning">Tight window: eat within ${remainingMin} min of the pickup deadline. Collect promptly.</p>`
+      : '';
     return `
         <div class="safety-box">
           <p><strong>Consume within: ${esc(l.consumeWithinHours)} hours</strong> (eat by ${esc(eatByText)})</p>
@@ -442,25 +472,27 @@
 
   function renderReceiver() {
     const options = RECEIVERS.map((r) => `<option value="${r.id}"${r.id === state.receiverId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
-    const cards = state.listings.map((l) => {
+    const cards = state.listings.filter((l) => l.status !== 'delivered').map((l) => {
       const action = isOpen(l)
         ? `<button class="primary" data-action="claim" data-id="${l.id}">Claim</button><span class="error" data-msg-for="${l.id}"></span>`
         : '';
       return listingCard(l, action);
     }).join('');
+    const doneCards = state.listings.filter((l) => l.status === 'delivered').map((l) => listingCard(l, '')).join('');
     return `
       <section class="card">
         <label>Claiming as
           <select id="receiver-select"><option value="">Choose a receiver&hellip;</option>${options}</select>
         </label>
       </section>
-      <div class="grid">${cards}</div>`;
+      <div class="grid">${cards}</div>
+      <details class="completed"><summary>Completed (sample data)</summary><div class="grid">${doneCards || '<p>No completed listings yet.</p>'}</div></details>`;
   }
 
   function renderVolunteer() {
     const volOptions = VOLUNTEERS.map((v) => `<option value="${v.id}"${v.id === state.volunteerId ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
     const cards = state.listings
-      .filter((l) => l.status !== 'posted')
+      .filter((l) => l.status === 'claimed' || l.status === 'collected')
       .map((l) => {
         const action = Object.keys(VOLUNTEER_ACTIONS).find((k) => VOLUNTEER_ACTIONS[k].from === l.status);
         const button = action
@@ -469,13 +501,15 @@
         return listingCard(l, button);
       })
       .join('');
+    const doneCards = state.listings.filter((l) => l.status === 'delivered').map((l) => listingCard(l, '')).join('');
     return `
       <section class="card">
         <label>Volunteering as
           <select id="volunteer-select"><option value="">Choose a volunteer&hellip;</option>${volOptions}</select>
         </label>
       </section>
-      <div class="grid">${cards || '<p>No listings ready to collect or deliver right now.</p>'}</div>`;
+      <div class="grid">${cards || '<p>No listings ready. Claim one in the Receiver view.</p>'}</div>
+      <details class="completed"><summary>Completed (sample data)</summary><div class="grid">${doneCards || '<p>No completed listings yet.</p>'}</div></details>`;
   }
 
   // ---- Impact tab: only status 'delivered' counts. kg listings convert to meals; meal listings convert to kg. ----
@@ -597,7 +631,7 @@
 
   // ---- Business Case tab: every figure is an assumption. Results re-render only into #business-results. ----
   // City name shown in section 1. Set by the city input; kept when switching tabs.
-  let businessCity = '[Hyderabad]';
+  let businessCity = 'Hyderabad';
   const bizValue = (key) => Math.max(0, Number(BUSINESS_INPUTS[key]) || 0);
   const rupees = (n) => `${n < 0 ? '-' : ''}₹${Math.abs(Math.round(n)).toLocaleString('en-IN')}`;
   const count = (n) => Math.round(n).toLocaleString('en-IN');
@@ -853,12 +887,17 @@
     const pickupValue = data.get('pickupBy');
     const pickupBy = new Date(pickupValue).getTime();
     const consumeWithin = Number(data.get('consumeWithinHours'));
+    // Posting time is now, so the eat-by time is now plus the consume-within hours.
+    const eatBy = Date.now() + consumeWithin * HOUR;
 
     const errors = {
       foodType: foodType ? '' : 'Food type is required.',
       quantity: quantity > 0 ? '' : 'Quantity must be greater than 0.',
       consumeWithinHours: consumeWithin > 0 ? '' : 'Consume-within hours must be greater than 0.',
-      pickupBy: pickupValue && !Number.isNaN(pickupBy) ? '' : 'Pickup-by time is required.',
+      pickupBy: !pickupValue || Number.isNaN(pickupBy) ? 'Pickup-by time is required.'
+        : consumeWithin > 0 && pickupBy > eatBy
+          ? 'Pickup-by time must be no later than the eat-by time (posted time plus consume-within hours). Choose an earlier pickup-by time, or a food category with a longer window.'
+          : '',
     };
     let valid = true;
     form.querySelectorAll('[data-error]').forEach((el) => {
@@ -990,7 +1029,7 @@
   // Defaults copied before any saved state is loaded, so "Reset demo data" can restore them.
   const DEFAULT_IMPACT = { ...IMPACT_ASSUMPTIONS };
   const DEFAULT_BUSINESS = { ...BUSINESS_INPUTS };
-  const DEFAULT_CITY = '[Hyderabad]';
+  const DEFAULT_CITY = 'Hyderabad';
 
   const isNonNegNumber = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
   const isPositiveNumber = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
@@ -1065,7 +1104,7 @@
       console.warn('Rescue the Surplus: could not clear saved data.', err);
     }
     state.listings = sampleListings().concat(sampleDeliveredListings());
-    state.nextId = 19;
+    state.nextId = 20;
     state.receiverId = null;
     state.volunteerId = null;
     Object.assign(IMPACT_ASSUMPTIONS, DEFAULT_IMPACT);
@@ -1078,8 +1117,27 @@
     resetDemoData();
   });
 
+  // Replaces only the sample listings with fresh ones once every open sample has expired.
+  function reseedSamplesIfExpired() {
+    try {
+      const samples = state.listings.filter((l) => l.sample === true && l.status === 'posted');
+      if (samples.length === 0) return;
+      if (samples.some((l) => l.pickupBy > Date.now())) return;
+      const userListings = state.listings.filter((l) => l.sample !== true);
+      const fresh = sampleListings().concat(sampleDeliveredListings());
+      let nextId = state.nextId;
+      for (const l of fresh) l.id = nextId++;
+      state.listings = [...userListings, ...fresh];
+      state.nextId = nextId;
+      saveState();
+    } catch (err) {
+      console.warn('Rescue the Surplus: could not reseed expired sample listings.', err);
+    }
+  }
+
   const saved = loadState();
   if (saved) applyState(saved);
+  reseedSamplesIfExpired();
   render();
 </script>
 </body>
