@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rescue the Surplus</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #f5f7f4; color: #1d2b1f; display: flex; flex-direction: column; min-height: 100vh; }
@@ -61,6 +64,31 @@
   .pricing th, .pricing td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #ddd; vertical-align: top; }
   footer { background: #e3ebe4; padding: 12px 24px; text-align: center; font-size: 0.9rem; }
   .reset-demo { margin-left: 12px; font: inherit; font-size: 0.85rem; padding: 4px 10px; border: 1px solid #2e7d4f; border-radius: 4px; background: #fff; color: #2e7d4f; cursor: pointer; }
+  /* Map tab: the SVG scales to the width of its card; the list stacks below the map on narrow screens. */
+  .map-controls select { width: auto; }
+  .map-legend { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.85rem; }
+  .map-legend li { display: flex; align-items: center; gap: 4px; }
+  .map-legend svg { display: block; }
+  .map-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+  .map-layout > * { min-width: 0; }
+  .map-card { margin-bottom: 0; }
+  .map-svg { display: block; width: 100%; height: auto; }
+  .map-marker { cursor: pointer; }
+  .map-items { list-style: none; margin: 0; padding: 0; }
+  .map-items li { border-bottom: 1px solid #ddd; padding: 4px 0; }
+  .map-item { display: block; width: 100%; background: none; border: none; border-radius: 4px; padding: 6px 8px; text-align: left; font: inherit; font-size: 0.9rem; cursor: pointer; }
+  .map-item:hover, .map-item.selected { background: #e3ebe4; }
+  @media (max-width: 640px) {
+    .map-layout { grid-template-columns: minmax(0, 1fr); }
+  }
+  #map-leaflet { height: 60vh; min-height: 320px; width: 100%; border-radius: 8px; }
+  .map-fallback { padding: 1rem; border: 1px dashed #999; border-radius: 8px; }
+  .map-tri { width: 0; height: 0; border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 16px solid #c2410c; }
+  .map-sq { width: 14px; height: 14px; background: #1d4ed8; border: 2px solid #fff; }
+  .map-circ { width: 16px; height: 16px; border-radius: 50%; background: #15803d; border: 2px solid #fff; }
+  .map-row-active { outline: 2px solid #0f766e; }
+  @media (max-width: 640px) { .map-layout { grid-template-columns: 1fr; } }
+
 </style>
 </head>
 <body>
@@ -72,6 +100,7 @@
     <button class="role-btn" data-role="volunteer" aria-pressed="false">Volunteer</button>
     <button class="role-btn" data-role="impact" aria-pressed="false">Impact</button>
     <button class="role-btn" data-role="business" aria-pressed="false">Business Case</button>
+    <button class="role-btn" data-role="map" aria-pressed="false">Map</button>
   </div>
 </header>
 
@@ -127,14 +156,24 @@
     deliver: { from: 'collected', to: 'delivered', label: 'Mark delivered' },
   };
 
+  // Straight-line distance between two grid locations, in km. Used by matching and the Map tab.
+  function gridDistanceKm(a, b) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy) * KM_PER_GRID_UNIT;
+  }
+
+  // Travel minutes for a distance in km at SPEED_KMH. Used by matching and the Map tab.
+  function travelMinutesFor(km) {
+    return (km / SPEED_KMH) * 60;
+  }
+
   // Scores one receiver for one listing. Each component is 0..1; points are rounded per component
   // and the total is the sum of those rounded points, so the displayed parts add up to the score.
   function scoreMatch(listing, receiver) {
     const donor = DONORS.find((d) => d.id === listing.donorId);
-    const dx = donor.location.x - receiver.location.x;
-    const dy = donor.location.y - receiver.location.y;
-    const dKm = Math.sqrt(dx * dx + dy * dy) * KM_PER_GRID_UNIT;
-    const travelMinutes = (dKm / SPEED_KMH) * 60;
+    const dKm = gridDistanceKm(donor.location, receiver.location);
+    const travelMinutes = travelMinutesFor(dKm);
     const distanceScore = Math.max(0, 1 - dKm / MAX_DISTANCE_KM);
 
     // kg listings convert to meals using the Impact assumption (single source of truth).
@@ -292,6 +331,10 @@
     nextId: 20,
     receiverId: null,
     volunteerId: null,
+    // Map tab (not saved): centre in grid units, radius in km, and the selected receiver or listing.
+    mapCenter: null,
+    mapRadiusKm: 5,
+    mapSelected: null,
   };
 
   const view = document.getElementById('view');
@@ -302,7 +345,7 @@
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const pad = (n) => String(n).padStart(2, '0');
   const findById = (list, id) => list.find((item) => item.id === id);
-  const fmtLoc = (loc) => `Grid ${loc.grid} (x ${loc.x}, y ${loc.y})`;
+
   const isOpen = (l) => l.status === 'posted' && l.pickupBy > Date.now();
   // Derived display state: a posted listing past pickup time shows as expired (status is not changed).
   const displayStatus = (l) => (l.status === 'posted' && l.pickupBy <= Date.now() ? 'expired' : l.status);
@@ -340,11 +383,16 @@
 
   // Top-scoring receivers for an open listing, rendered as a small block.
   // Receivers who cannot arrive before pickup-by (travel time > time left) are excluded before taking the top matches.
-  function matchesHtml(l) {
-    const ranked = RECEIVERS.map((r) => scoreMatch(l, r))
+  // Receivers who can arrive before pickup-by, ranked by score; the top TOP_MATCH_COUNT are kept.
+  function topMatches(l) {
+    return RECEIVERS.map((r) => scoreMatch(l, r))
       .filter((m) => m.travelMinutes <= m.minutesLeft)
       .sort((a, b) => b.score - a.score)
       .slice(0, TOP_MATCH_COUNT);
+  }
+
+  function matchesHtml(l) {
+    const ranked = topMatches(l);
     const items = ranked.map((m) => {
       const total = Math.round(m.listingMeals);
       const canTake = Math.floor(Math.min(m.receiver.capacity, m.listingMeals));
@@ -406,7 +454,6 @@
         ${badgeHtml(l)}${l.sample ? '<span class="sample-tag">sample</span>' : ''}
         <h3>${esc(l.foodType)} &mdash; ${esc(l.quantity)} ${esc(l.unit)}</h3>
         <p>From ${esc(donor.name)} (${esc(donor.kind)})</p>
-        <p>${esc(fmtLoc(donor.location))}</p>
         ${safetyHtml(l)}
         <p>Pickup by ${esc(new Date(l.pickupBy).toLocaleString())}</p>
         <p><span class="countdown" data-deadline="${l.pickupBy}"></span></p>
@@ -852,7 +899,143 @@
       </section>`;
   }
 
-  const VIEWS = { donor: renderDonor, receiver: renderReceiver, volunteer: renderVolunteer, impact: renderImpact, business: renderBusiness };
+  // ---- Map tab: Leaflet map (see renderMap). Shows donors, receivers and open listings only. ----
+  // Distances and travel times use gridDistanceKm and travelMinutesFor, the same functions as matching.
+
+  const MAP_GRID_W = 9;       // grid units across the viewBox
+  const MAP_GRID_H = 8;       // grid units down the viewBox
+  const MAP_RADIUS_OPTIONS = [2, 5, 10];
+  const MAP_OPEN_STATUSES = ['posted', 'claimed', 'collected'];
+
+  const mapOpen = (l) => MAP_OPEN_STATUSES.includes(displayStatus(l));
+
+  const isMapSelected = (type, id) => state.mapSelected !== null && state.mapSelected.type === type && state.mapSelected.id === id;
+
+  // Leaflet helpers. HYD is the Hyderabad centre; one grid unit is KM_PER_GRID_UNIT km, the scale gridDistanceKm uses.
+  const HYD = [17.3850, 78.4867];
+  const HYD_COS_LAT = Math.cos(HYD[0] * Math.PI / 180);
+  const toLatLng = (p) => [HYD[0] - (p.y * KM_PER_GRID_UNIT) / 111.32, HYD[1] + (p.x * KM_PER_GRID_UNIT) / (111.32 * HYD_COS_LAT)];
+  const toGrid = (lat, lng) => ({ x: ((lng - HYD[1]) * 111.32 * HYD_COS_LAT) / KM_PER_GRID_UNIT, y: ((HYD[0] - lat) * 111.32) / KM_PER_GRID_UNIT });
+  let mapInstance = null;
+  let mapCircle = null;
+  let mapCentreMarker = null;
+  let mapMarkers = {};
+
+  // List rows for the current centre and radius. Shared by renderMap and setMapCentre.
+  function mapListHtml(center, r) {
+    if (!center) return '<p>Click the map or a donor marker to set the centre.</p>';
+    const receiverRows = RECEIVERS
+      .map((rc) => ({ rc, km: gridDistanceKm(center, rc.location) }))
+      .filter((o) => o.km <= r)
+      .map(({ rc, km }) => `<button type="button" class="map-item${isMapSelected('receiver', rc.id) ? ' map-row-active' : ''}" data-map-item="receiver:${rc.id}"><strong>${esc(rc.name)}</strong> (receiver)<br><small>${km.toFixed(1)} km &middot; ${Math.round(travelMinutesFor(km))} min travel</small></button>`);
+    const listingRows = state.listings.filter(mapOpen)
+      .map((l) => ({ l, km: gridDistanceKm(center, findById(DONORS, l.donorId).location) }))
+      .filter((o) => o.km <= r)
+      .map(({ l, km }) => {
+        const top = topMatches(l).slice(0, 3).map((m) => `${esc(m.receiver.name)} ${m.score}/100`);
+        const matchText = top.length ? top.join(' &middot; ') : 'No receiver can arrive before pickup-by';
+        return `<button type="button" class="map-item${isMapSelected('listing', l.id) ? ' map-row-active' : ''}" data-map-item="listing:${l.id}"><strong>${esc(l.foodType)}</strong> (listing)<br><small>${km.toFixed(1)} km &middot; ${Math.round(travelMinutesFor(km))} min travel</small><br><small>Top matches: ${matchText}</small></button>`;
+      });
+    const rows = [...receiverRows, ...listingRows];
+    return rows.length ? rows.join('') : '<p>Nothing within this radius. Try a larger one.</p>';
+  }
+
+  function renderMap() {
+    const r = state.mapRadiusKm ?? 5;
+    const options = MAP_RADIUS_OPTIONS.map((v) => `<option value="${v}"${v === r ? ' selected' : ''}>${v} km</option>`).join('');
+    return `
+      <h2>Map</h2>
+      <p class="muted">Sample locations, fictional organisations</p>
+      <div class="map-controls"><label>Radius <select id="map-radius">${options}</select></label></div>
+      <div class="map-legend"><span>Circle: donor</span> <span>Square: receiver</span> <span>Triangle: open listing</span></div>
+      <div id="map-leaflet"></div>
+      <p id="map-status" class="muted"></p>
+      <div id="map-detail"></div>
+      <div id="map-list" class="map-items">${mapListHtml(state.mapCenter, r)}</div>`;
+  }
+
+  // Builds the Leaflet map inside #map-leaflet after the Map view is rendered.
+  function initMapLeaflet() {
+    const el = document.getElementById('map-leaflet');
+    if (!el) return;
+    if (mapInstance) { mapInstance.remove(); mapInstance = null; }
+    mapCircle = null;
+    mapCentreMarker = null;
+    mapMarkers = {};
+    if (!window.L) {
+      el.innerHTML = '<p class="map-fallback">Map could not load. Check your connection and refresh.</p>';
+      return;
+    }
+    mapInstance = L.map('map-leaflet', { center: HYD, zoom: 12 });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(mapInstance);
+
+    const icon = (cls) => L.divIcon({ html: `<div class="${cls}"></div>`, className: '', iconSize: [16, 16] });
+
+    DONORS.forEach((d) => {
+      const m = L.marker(toLatLng(d.location), { icon: icon('map-circ') }).addTo(mapInstance);
+      m.bindPopup(esc(d.name));
+      m.on('click', () => setMapCentre({ x: d.location.x, y: d.location.y }));
+      mapMarkers[`donor:${d.id}`] = m;
+    });
+    RECEIVERS.forEach((rc) => {
+      const m = L.marker(toLatLng(rc.location), { icon: icon('map-sq') }).addTo(mapInstance);
+      m.bindPopup(esc(rc.name));
+      mapMarkers[`receiver:${rc.id}`] = m;
+    });
+    state.listings.filter(mapOpen).forEach((l) => {
+      const donor = findById(DONORS, l.donorId);
+      const m = L.marker(toLatLng(donor.location), { icon: icon('map-tri') }).addTo(mapInstance);
+      m.bindPopup(esc(l.foodType));
+      mapMarkers[`listing:${l.id}`] = m;
+    });
+
+    mapInstance.on('click', (e) => setMapCentre(toGrid(e.latlng.lat, e.latlng.lng)));
+    if (state.mapCenter) drawMapCentre();
+  }
+
+  // Draws the radius circle and centre marker for state.mapCenter, replacing any previous ones.
+  function drawMapCentre() {
+    if (!mapInstance || !state.mapCenter) return;
+    const ll = toLatLng(state.mapCenter);
+    if (mapCircle) mapCircle.remove();
+    if (mapCentreMarker) mapCentreMarker.remove();
+    mapCircle = L.circle(ll, { radius: (state.mapRadiusKm ?? 5) * 1000, color: '#0f766e' }).addTo(mapInstance);
+    mapCentreMarker = L.circleMarker(ll, { radius: 6, color: '#0f766e', fillColor: '#0f766e', fillOpacity: 1 }).addTo(mapInstance);
+    mapInstance.panTo(ll);
+  }
+
+  // Sets the centre, redraws the circle, and re-renders only the list and the detail panel.
+  function setMapCentre(p) {
+    state.mapCenter = p;
+    state.mapSelected = null;
+    drawMapCentre();
+    const list = document.getElementById('map-list');
+    const detail = document.getElementById('map-detail');
+    if (list) list.innerHTML = mapListHtml(p, state.mapRadiusKm ?? 5);
+    if (detail) detail.innerHTML = '';
+  }
+
+  // Selects a list row or marker: highlights the row, opens the marker popup, and shows the details.
+  function showMapItem(type, id) {
+    state.mapSelected = { type, id };
+    document.querySelectorAll('[data-map-item]').forEach((b) => b.classList.toggle('map-row-active', b.dataset.mapItem === `${type}:${id}`));
+    const marker = mapMarkers[`${type}:${id}`];
+    if (marker) marker.openPopup();
+    const detail = document.getElementById('map-detail');
+    if (!detail) return;
+    if (type === 'listing') {
+      const l = findById(state.listings, id);
+      detail.innerHTML = l ? listingCard(l, '') : '';
+    } else {
+      const rc = findById(RECEIVERS, id);
+      detail.innerHTML = rc ? `<div class="card"><h3>${esc(rc.name)}</h3><p class="muted">Receiver</p></div>` : '';
+    }
+  }
+
+
+  const VIEWS = { donor: renderDonor, receiver: renderReceiver, volunteer: renderVolunteer, impact: renderImpact, business: renderBusiness, map: renderMap };
 
   function tickCountdowns() {
     const now = Date.now();
@@ -874,6 +1057,7 @@
       b.setAttribute('aria-pressed', String(active));
     });
     view.innerHTML = VIEWS[state.role]();
+    if (state.role === 'map') initMapLeaflet();
     // One interval at a time: rebuild on every render so none leak.
     clearInterval(timer);
     tickCountdowns();
@@ -951,6 +1135,10 @@
     if (e.target.id === 'volunteer-select') {
       state.volunteerId = Number(e.target.value) || null;
     }
+    if (e.target.id === 'map-radius') {
+      state.mapRadiusKm = Number(e.target.value);
+      render();
+    }
   });
 
   // Assumption inputs: update only the results block so the input keeps focus.
@@ -1022,6 +1210,15 @@
     }
     saveState();
     render();
+  });
+
+  // Map tab: a list row selects its marker and shows its details. Donor and empty-map clicks are handled by the Leaflet map.
+  view.addEventListener('click', (e) => {
+    if (state.role !== 'map') return;
+    const item = e.target.closest('[data-map-item]');
+    if (!item) return;
+    const [type, id] = item.dataset.mapItem.split(':');
+    showMapItem(type, Number(id));
   });
 
   // ---- Persistence: listings, statuses, timelines, claims, volunteer actions, Impact assumptions, Business Case inputs and city. ----
