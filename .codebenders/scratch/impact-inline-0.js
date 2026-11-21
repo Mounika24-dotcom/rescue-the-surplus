@@ -1,0 +1,546 @@
+
+  // ---- Smart matching settings: edit these to tune the scoring ----
+  // Weight of each score component (0..1). The four weights must sum to 1.
+  const WEIGHTS = { distance: 0.35, fit: 0.25, time: 0.20, need: 0.20 };
+  // Distance at or beyond this many km scores 0 on distance.
+  const MAX_DISTANCE_KM = 10;
+  // Converts one grid unit (the x/y coordinates in DONORS and RECEIVERS) to km.
+  // The grid is about 8 x 7 units, so 1.2 km per unit makes the city roughly 10 km across.
+  const KM_PER_GRID_UNIT = 1.2;
+  // Converts a kg listing to meals when comparing it with receiver capacity.
+  const MEALS_PER_KG = 2;
+  // Hours left at or above this value earn full time points.
+  const TIME_FULL_SCORE_HOURS = 6;
+  // Number of top-scoring receivers shown on each open listing.
+  const TOP_MATCH_COUNT = 3;
+  // Impact tab conversion factors. Placeholders: replace with sourced figures.
+  const IMPACT_ASSUMPTIONS = { kgPerMeal: 0.4, co2PerKg: 2.5 };
+
+  const HOUR = 60 * 60 * 1000;
+  const MIN = 60 * 1000;
+  const ALLERGENS = ['nuts', 'dairy', 'gluten', 'eggs', 'soy', 'none'];
+  // Listing status flow: posted -> claimed -> collected -> delivered ('expired' is derived, never stored).
+  const STEPS = ['posted', 'claimed', 'collected', 'delivered'];
+  const STATUS_LABELS = { posted: 'Posted', claimed: 'Claimed', collected: 'Collected', delivered: 'Delivered', expired: 'Expired' };
+  // Volunteer actions: the listing status each one requires and sets.
+  const VOLUNTEER_ACTIONS = {
+    collect: { from: 'claimed', to: 'collected', label: 'Mark collected' },
+    deliver: { from: 'collected', to: 'delivered', label: 'Mark delivered' },
+  };
+
+  // Scores one receiver for one listing, each component in 0..1, combined to 0..100.
+  function scoreMatch(listing, receiver) {
+    const donor = DONORS.find((d) => d.id === listing.donorId);
+    const dx = donor.location.x - receiver.location.x;
+    const dy = donor.location.y - receiver.location.y;
+    const dKm = Math.sqrt(dx * dx + dy * dy) * KM_PER_GRID_UNIT;
+    const distanceScore = Math.max(0, 1 - dKm / MAX_DISTANCE_KM);
+
+    const listingMeals = listing.unit === 'kg' ? listing.quantity * MEALS_PER_KG : listing.quantity;
+    const fitScore = Math.min(listingMeals, receiver.capacity) / Math.max(listingMeals, receiver.capacity);
+
+    const hoursLeft = (listing.pickupBy - Date.now()) / HOUR;
+    const timeScore = Math.min(1, Math.max(0, hoursLeft / TIME_FULL_SCORE_HOURS));
+
+    const needScore = (receiver.need - 1) / 4;
+
+    const raw = WEIGHTS.distance * distanceScore
+      + WEIGHTS.fit * fitScore
+      + WEIGHTS.time * timeScore
+      + WEIGHTS.need * needScore;
+    const score = Math.min(100, Math.max(0, Math.round(100 * raw)));
+    return { receiver, score, dKm, listingMeals, hoursLeft };
+  }
+
+  // Fictional city grid: each location is a grid label plus x/y coordinates.
+  const DONORS = [
+    { id: 1, name: 'Saffron Caterers', kind: 'Caterer', location: { grid: 'C3', x: 3, y: 4 } },
+    { id: 2, name: 'Lotus Function Hall', kind: 'Function hall', location: { grid: 'F1', x: 6, y: 1 } },
+    { id: 3, name: 'Maple Banquet Hall', kind: 'Function hall', location: { grid: 'B5', x: 2, y: 5 } },
+    { id: 4, name: 'Annapurna Catering Co.', kind: 'Caterer', location: { grid: 'D2', x: 4, y: 2 } },
+    { id: 5, name: 'Silver Oak Events', kind: 'Caterer', location: { grid: 'G6', x: 7, y: 6 } },
+    { id: 6, name: 'Jasmine Garden Hall', kind: 'Function hall', location: { grid: 'E4', x: 5, y: 4 } },
+  ];
+
+  const RECEIVERS = [
+    { id: 1, name: 'Hope Foundation', kind: 'NGO', location: { grid: 'A1', x: 1, y: 1 }, capacity: 60, need: 5 },
+    { id: 2, name: 'Annadaan Community Kitchen', kind: 'Community kitchen', location: { grid: 'B3', x: 2, y: 3 }, capacity: 120, need: 4 },
+    { id: 3, name: 'Sahyog Trust', kind: 'NGO', location: { grid: 'E7', x: 5, y: 7 }, capacity: 25, need: 3 },
+    { id: 4, name: 'Nanhe Kadam Kitchen', kind: 'Community kitchen', location: { grid: 'G2', x: 7, y: 2 }, capacity: 90, need: 2 },
+    { id: 5, name: 'Asha Seva Samiti', kind: 'NGO', location: { grid: 'H5', x: 8, y: 5 }, capacity: 40, need: 1 },
+  ];
+
+  // Sample volunteers for the "Volunteering as" selector.
+  const VOLUNTEERS = [
+    { id: 1, name: 'Asha Menon' },
+    { id: 2, name: 'Rohan Iyer' },
+    { id: 3, name: 'Meera Kapoor' },
+    { id: 4, name: 'Vikram Shah' },
+  ];
+
+  // Pickup times are offsets from Date.now() at load; negative = already past.
+  function sampleListings() {
+    const now = Date.now();
+    const spec = [
+      { donorId: 1, foodType: 'Paneer tikka & naan', quantity: 40, unit: 'meals', offset: 150 * MIN, allergens: ['dairy', 'gluten'], storageNote: 'Hot-held in chafing dishes' },
+      { donorId: 2, foodType: 'Dal, rice & salad', quantity: 25, unit: 'kg', offset: 4 * HOUR, allergens: ['none'], storageNote: 'Sealed steel containers, keep covered' },
+      { donorId: 3, foodType: 'Vegetable biryani', quantity: 60, unit: 'meals', offset: 75 * MIN, allergens: ['dairy'], storageNote: 'Foil trays, refrigerate on arrival' },
+      { donorId: 4, foodType: 'Mithai sweets box', quantity: 10, unit: 'kg', offset: 3 * HOUR, allergens: ['dairy', 'nuts'], storageNote: 'Boxed, room temperature is fine' },
+      { donorId: 5, foodType: 'Bread rolls & butter', quantity: 30, unit: 'meals', offset: 20 * MIN, allergens: ['gluten', 'dairy'], storageNote: 'Wrapped, no refrigeration needed' },
+      { donorId: 6, foodType: 'Samosas & chutney', quantity: 50, unit: 'meals', offset: -15 * MIN, allergens: ['gluten'], storageNote: 'Fried snacks, best eaten same day' },
+      { donorId: 1, foodType: 'Fresh fruit platter', quantity: 8, unit: 'kg', offset: 5 * HOUR, allergens: ['none'], storageNote: 'Keep chilled' },
+      { donorId: 5, foodType: 'Egg fried rice & soup', quantity: 35, unit: 'meals', offset: 5.75 * HOUR, allergens: ['eggs', 'soy'], storageNote: 'Hot packs in bag' },
+    ];
+    return spec.map((s, i) => ({
+      id: i + 1,
+      donorId: s.donorId,
+      foodType: s.foodType,
+      quantity: s.quantity,
+      unit: s.unit,
+      pickupBy: now + s.offset,
+      allergens: s.allergens,
+      storageNote: s.storageNote,
+      status: 'posted',
+      history: [],
+      postedAt: now - (10 + i * 5) * MIN,
+    }));
+  }
+
+  // Ten delivered sample listings from the last 30 days, with history. Ids 9-18.
+  function sampleDeliveredListings() {
+    const now = Date.now();
+    const DAY = 24 * HOUR;
+    // [donorId, foodType, quantity, unit, daysAgo, receiverId, volunteerId, allergens, storageNote]
+    const spec = [
+      [1, 'Paneer tikka & naan', 20, 'meals', 26, 2, 1, ['dairy', 'gluten'], 'Hot-held in chafing dishes'],
+      [2, 'Dal, rice & salad', 20, 'kg', 23, 1, 2, ['none'], 'Sealed steel containers, keep covered'],
+      [3, 'Vegetable biryani', 25, 'meals', 19, 3, 3, ['dairy'], 'Foil trays, refrigerated'],
+      [4, 'Mithai sweets box', 15, 'kg', 16, 4, 4, ['dairy', 'nuts'], 'Boxed, room temperature'],
+      [5, 'Bread rolls & butter', 30, 'meals', 12, 5, 1, ['gluten', 'dairy'], 'Wrapped, no refrigeration needed'],
+      [6, 'Samosas & chutney', 12, 'kg', 9, 2, 2, ['gluten'], 'Fried snacks, eaten same day'],
+      [1, 'Fresh fruit platter', 25, 'meals', 6, 1, 3, ['none'], 'Keep chilled'],
+      [3, 'Mixed veg curry', 13, 'kg', 4, 3, 4, ['none'], 'Keep covered'],
+      [5, 'Egg fried rice & soup', 35, 'meals', 3, 4, 1, ['eggs', 'soy'], 'Hot packs in bag'],
+      [6, 'Chole bhature', 20, 'meals', 1, 5, 2, ['gluten', 'dairy'], 'Foil trays, refrigerate on arrival'],
+    ];
+    return spec.map((s, i) => {
+      const [donorId, foodType, quantity, unit, daysAgo, receiverId, volunteerId, allergens, storageNote] = s;
+      const deliveredAt = now - daysAgo * DAY;
+      const receiverName = RECEIVERS.find((r) => r.id === receiverId).name;
+      const volunteerName = VOLUNTEERS.find((v) => v.id === volunteerId).name;
+      return {
+        id: 9 + i,
+        donorId,
+        foodType,
+        quantity,
+        unit,
+        pickupBy: deliveredAt - HOUR,
+        allergens,
+        storageNote,
+        status: 'delivered',
+        sample: true,
+        postedAt: deliveredAt - 6 * HOUR,
+        history: [
+          { step: 'claimed', by: receiverName, at: deliveredAt - 4 * HOUR },
+          { step: 'collected', by: volunteerName, at: deliveredAt - 2 * HOUR },
+          { step: 'delivered', by: volunteerName, at: deliveredAt },
+        ],
+      };
+    });
+  }
+
+  const state = {
+    role: 'donor',
+    listings: sampleListings().concat(sampleDeliveredListings()),
+    nextId: 19,
+    receiverId: null,
+    volunteerId: null,
+  };
+
+  const view = document.getElementById('view');
+  let timer = null;
+
+  const esc = (value) => String(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const pad = (n) => String(n).padStart(2, '0');
+  const findById = (list, id) => list.find((item) => item.id === id);
+  const fmtLoc = (loc) => `Grid ${loc.grid} (x ${loc.x}, y ${loc.y})`;
+  const isOpen = (l) => l.status === 'posted' && l.pickupBy > Date.now();
+  // Derived display state: a posted listing past pickup time shows as expired (status is not changed).
+  const displayStatus = (l) => (l.status === 'posted' && l.pickupBy <= Date.now() ? 'expired' : l.status);
+
+  function formatLeft(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h}h ${pad(m)}m ${pad(s)}s left`;
+  }
+
+  function badgeHtml(l) {
+    const s = displayStatus(l);
+    return `<span class="badge ${s}">${STATUS_LABELS[s]}</span>`;
+  }
+
+  // Ordered steps with time and name; steps not yet reached show as pending.
+  function timelineHtml(l) {
+    const donor = findById(DONORS, l.donorId);
+    const reached = { posted: { at: l.postedAt, by: donor.name } };
+    l.history.forEach((h) => { reached[h.step] = h; });
+    const items = STEPS.map((step) => {
+      const r = reached[step];
+      if (!r) return `<li class="pending">${STATUS_LABELS[step]}</li>`;
+      const time = new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `<li>${STATUS_LABELS[step]} &middot; ${esc(time)} &middot; ${esc(r.by)}</li>`;
+    }).join('');
+    return `<ol class="timeline">${items}</ol>`;
+  }
+
+  function formatHoursLeft(hours) {
+    return hours < 1 ? `${Math.floor(hours * 60)}m left` : `${Math.floor(hours)}h left`;
+  }
+
+  // Top-scoring receivers for an open listing, rendered as a small block.
+  function matchesHtml(l) {
+    const top = RECEIVERS.map((r) => scoreMatch(l, r))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, TOP_MATCH_COUNT);
+    const items = top.map((m) => {
+      const reason = `${m.dKm.toFixed(1)} km away, can take ${m.receiver.capacity} meals, ${formatHoursLeft(m.hoursLeft)}`;
+      return `<li><strong>${esc(m.receiver.name)}</strong> &middot; ${m.score}/100<br><small>${esc(reason)}</small></li>`;
+    }).join('');
+    return `
+      <div class="matches" data-match-until="${l.pickupBy}">
+        <p><strong>Top matches</strong></p>
+        <ol>${items}</ol>
+      </div>`;
+  }
+
+  function listingCard(l, actionHtml) {
+    const donor = findById(DONORS, l.donorId);
+    // Matches only for open listings; closed or claimed ones show none.
+    const matches = isOpen(l) ? matchesHtml(l) : '';
+    return `
+      <article class="card">
+        ${badgeHtml(l)}${l.sample ? '<span class="sample-tag">sample</span>' : ''}
+        <h3>${esc(l.foodType)} &mdash; ${esc(l.quantity)} ${esc(l.unit)}</h3>
+        <p>From ${esc(donor.name)} (${esc(donor.kind)})</p>
+        <p>${esc(fmtLoc(donor.location))}</p>
+        <p>Allergens: ${l.allergens.map(esc).join(', ')}</p>
+        ${l.storageNote ? `<p>Storage: ${esc(l.storageNote)}</p>` : ''}
+        <p>Pickup by ${esc(new Date(l.pickupBy).toLocaleString())}</p>
+        <p><span class="countdown" data-deadline="${l.pickupBy}"></span></p>
+        ${timelineHtml(l)}
+        ${matches}
+        ${actionHtml}
+      </article>`;
+  }
+
+  function renderDonor() {
+    const donorOptions = DONORS.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    const allergenBoxes = ALLERGENS.map((a) => `<label><input type="checkbox" name="allergens" value="${a}"> ${a}</label>`).join('');
+    const cards = state.listings.map((l) => listingCard(l, '')).join('');
+    return `
+      <section class="card">
+        <h2>Post surplus food</h2>
+        <form id="donor-form" novalidate>
+          <div class="row">
+            <label>Food type
+              <input type="text" name="foodType" placeholder="e.g. Paneer curry">
+              <span class="error" data-error="foodType"></span>
+            </label>
+            <label>Donor
+              <select name="donorId">${donorOptions}</select>
+            </label>
+          </div>
+          <div class="row">
+            <label>Quantity
+              <input type="number" name="quantity" min="0" step="any">
+              <span class="error" data-error="quantity"></span>
+            </label>
+            <label>Unit
+              <select name="unit"><option value="meals">meals</option><option value="kg">kg</option></select>
+            </label>
+          </div>
+          <label>Pickup-by time
+            <input type="datetime-local" name="pickupBy">
+            <span class="error" data-error="pickupBy"></span>
+          </label>
+          <fieldset>
+            <legend>Allergens</legend>
+            ${allergenBoxes}
+          </fieldset>
+          <label>Storage note
+            <input type="text" name="storageNote" placeholder="e.g. Keep covered, refrigerate">
+          </label>
+          <button type="submit" class="primary">Post listing</button>
+        </form>
+      </section>
+      <h2>All listings</h2>
+      <div class="grid">${cards}</div>`;
+  }
+
+  function renderReceiver() {
+    const options = RECEIVERS.map((r) => `<option value="${r.id}"${r.id === state.receiverId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
+    const cards = state.listings.map((l) => {
+      const action = isOpen(l)
+        ? `<button class="primary" data-action="claim" data-id="${l.id}">Claim</button><span class="error" data-msg-for="${l.id}"></span>`
+        : '';
+      return listingCard(l, action);
+    }).join('');
+    return `
+      <section class="card">
+        <label>Claiming as
+          <select id="receiver-select"><option value="">Choose a receiver&hellip;</option>${options}</select>
+        </label>
+      </section>
+      <div class="grid">${cards}</div>`;
+  }
+
+  function renderVolunteer() {
+    const volOptions = VOLUNTEERS.map((v) => `<option value="${v.id}"${v.id === state.volunteerId ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
+    const cards = state.listings
+      .filter((l) => l.status !== 'posted')
+      .map((l) => {
+        const action = Object.keys(VOLUNTEER_ACTIONS).find((k) => VOLUNTEER_ACTIONS[k].from === l.status);
+        const button = action
+          ? `<button class="primary" data-action="${action}" data-id="${l.id}">${VOLUNTEER_ACTIONS[action].label}</button><span class="error" data-msg-for="${l.id}"></span>`
+          : '';
+        return listingCard(l, button);
+      })
+      .join('');
+    return `
+      <section class="card">
+        <label>Volunteering as
+          <select id="volunteer-select"><option value="">Choose a volunteer&hellip;</option>${volOptions}</select>
+        </label>
+      </section>
+      <div class="grid">${cards || '<p>No listings ready to collect or deliver right now.</p>'}</div>`;
+  }
+
+  // ---- Impact tab: only status 'delivered' counts. kg listings convert to meals; meal listings convert to kg. ----
+  const deliveredMeals = (l) => (l.unit === 'kg' ? l.quantity / IMPACT_ASSUMPTIONS.kgPerMeal : l.quantity);
+  const fmt1 = (n) => n.toFixed(1);
+
+  function impactTotals() {
+    const { kgPerMeal, co2PerKg } = IMPACT_ASSUMPTIONS;
+    const delivered = state.listings.filter((l) => l.status === 'delivered');
+    const mealListed = delivered.filter((l) => l.unit !== 'kg').reduce((sum, l) => sum + l.quantity, 0);
+    const kgListed = delivered.filter((l) => l.unit === 'kg').reduce((sum, l) => sum + l.quantity, 0);
+    const meals = mealListed + kgListed / kgPerMeal;
+    const foodKg = mealListed * kgPerMeal + kgListed;
+    const co2 = foodKg * co2PerKg;
+    return { mealListed, kgListed, meals, foodKg, co2 };
+  }
+
+  // Big numbers with plain-words formulas. Rendered into #impact-results so input changes can refresh only this part.
+  function impactResultsHtml() {
+    const t = impactTotals();
+    const { kgPerMeal, co2PerKg } = IMPACT_ASSUMPTIONS;
+    const mealsRounded = Math.round(t.meals);
+    return `
+      <div class="impact-numbers">
+        <div class="card">
+          <p class="big">${mealsRounded}</p>
+          <p><strong>Meals saved</strong></p>
+          <p class="formula">${Math.round(t.mealListed)} meals + ${fmt1(t.kgListed)} kg / ${kgPerMeal} kg per meal = ${mealsRounded} meals</p>
+        </div>
+        <div class="card">
+          <p class="big">${fmt1(t.foodKg)}</p>
+          <p><strong>Food rescued (kg)</strong></p>
+          <p class="formula">${mealsRounded} meals x ${kgPerMeal} kg = ${fmt1(t.foodKg)} kg</p>
+        </div>
+        <div class="card">
+          <p class="big">${fmt1(t.co2)}</p>
+          <p><strong>CO2e avoided (kg)</strong></p>
+          <p class="formula">${fmt1(t.foodKg)} kg x ${co2PerKg} = ${fmt1(t.co2)} kg CO2e</p>
+        </div>
+      </div>
+      ${weeklyBarsHtml()}`;
+  }
+
+  // Meals saved per week for the last 4 weeks, bucketed by the 'delivered' history entry.
+  function weeklyBarsHtml() {
+    const now = Date.now();
+    const WEEK = 7 * 24 * HOUR;
+    const labels = ['3 wks ago', '2 wks ago', '1 wk ago', 'This week'];
+    const buckets = [0, 0, 0, 0];
+    state.listings.forEach((l) => {
+      if (l.status !== 'delivered') return;
+      const entry = l.history.find((h) => h.step === 'delivered');
+      if (!entry) return;
+      const weeksAgo = Math.floor((now - entry.at) / WEEK);
+      if (weeksAgo >= 0 && weeksAgo <= 3) buckets[3 - weeksAgo] += deliveredMeals(l);
+    });
+    const max = Math.max(...buckets);
+    const bars = buckets.map((v, i) => {
+      const pct = max > 0 ? (v / max) * 100 : 0;
+      return `<div class="bar-col"><span>${Math.round(v)}</span><div class="bar-track"><div class="bar" style="height:${pct}%"></div></div><span>${labels[i]}</span></div>`;
+    }).join('');
+    return `
+      <section class="card">
+        <h3>Meals saved per week (last 4 weeks)</h3>
+        <div class="bars">${bars}</div>
+      </section>`;
+  }
+
+  function renderImpact() {
+    const { kgPerMeal, co2PerKg } = IMPACT_ASSUMPTIONS;
+    return `
+      <section class="card">
+        <h2>Assumptions</h2>
+        <div class="assumption">
+          <label>Kg of food per meal
+            <input type="number" step="any" min="0" value="${kgPerMeal}" data-assumption="kgPerMeal">
+          </label>
+          <p class="note">placeholder, replace with a sourced figure</p>
+        </div>
+        <div class="assumption">
+          <label>Kg CO2e avoided per kg of food rescued
+            <input type="number" step="any" min="0" value="${co2PerKg}" data-assumption="co2PerKg">
+          </label>
+          <p class="note">placeholder, replace with a sourced figure</p>
+        </div>
+      </section>
+      <div id="impact-results">${impactResultsHtml()}</div>
+      <p class="note">10 sample past deliveries are included for illustration (marked sample: true).</p>
+      <p class="note">Estimates based on the assumptions above; not verified measurements.</p>`;
+  }
+
+  const VIEWS = { donor: renderDonor, receiver: renderReceiver, volunteer: renderVolunteer, impact: renderImpact };
+
+  function tickCountdowns() {
+    const now = Date.now();
+    // Drop match blocks once their pickup window has passed, without a full re-render.
+    document.querySelectorAll('[data-match-until]').forEach((el) => {
+      if (Number(el.dataset.matchUntil) <= now) el.remove();
+    });
+    document.querySelectorAll('[data-deadline]').forEach((el) => {
+      const left = Number(el.dataset.deadline) - now;
+      el.textContent = left <= 0 ? 'Pickup window closed' : formatLeft(left);
+      el.classList.toggle('closed', left <= 0);
+    });
+  }
+
+  function render() {
+    document.querySelectorAll('.role-btn').forEach((b) => {
+      const active = b.dataset.role === state.role;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', String(active));
+    });
+    view.innerHTML = VIEWS[state.role]();
+    // One interval at a time: rebuild on every render so none leak.
+    clearInterval(timer);
+    tickCountdowns();
+    timer = setInterval(tickCountdowns, 1000);
+  }
+
+  function handleDonorSubmit(form) {
+    const data = new FormData(form);
+    const foodType = data.get('foodType').trim();
+    const quantity = Number(data.get('quantity'));
+    const pickupValue = data.get('pickupBy');
+    const pickupBy = new Date(pickupValue).getTime();
+
+    const errors = {
+      foodType: foodType ? '' : 'Food type is required.',
+      quantity: quantity > 0 ? '' : 'Quantity must be greater than 0.',
+      pickupBy: pickupValue && !Number.isNaN(pickupBy) ? '' : 'Pickup-by time is required.',
+    };
+    let valid = true;
+    form.querySelectorAll('[data-error]').forEach((el) => {
+      const message = errors[el.dataset.error];
+      el.textContent = message;
+      if (message) valid = false;
+    });
+    if (!valid) return;
+
+    const allergens = data.getAll('allergens');
+    state.listings.push({
+      id: state.nextId++,
+      donorId: Number(data.get('donorId')),
+      foodType,
+      quantity,
+      unit: data.get('unit'),
+      pickupBy,
+      allergens: allergens.length ? allergens : ['none'],
+      storageNote: data.get('storageNote').trim(),
+      status: 'posted',
+      history: [],
+      postedAt: Date.now(),
+    });
+    render();
+  }
+
+  document.querySelector('.roles').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-role]');
+    if (!btn) return;
+    state.role = btn.dataset.role;
+    render();
+  });
+
+  view.addEventListener('submit', (e) => {
+    if (e.target.id !== 'donor-form') return;
+    e.preventDefault();
+    handleDonorSubmit(e.target);
+  });
+
+  view.addEventListener('change', (e) => {
+    if (e.target.id === 'receiver-select') {
+      state.receiverId = Number(e.target.value) || null;
+    }
+    if (e.target.id === 'volunteer-select') {
+      state.volunteerId = Number(e.target.value) || null;
+    }
+  });
+
+  // Assumption inputs: update only the results block so the input keeps focus.
+  view.addEventListener('input', (e) => {
+    const key = e.target.dataset.assumption;
+    if (!key) return;
+    const value = Number(e.target.value);
+    if (!(value > 0)) return;
+    IMPACT_ASSUMPTIONS[key] = value;
+    document.getElementById('impact-results').innerHTML = impactResultsHtml();
+  });
+
+  view.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const listing = findById(state.listings, Number(btn.dataset.id));
+    if (!listing) return;
+    const msg = view.querySelector(`[data-msg-for="${listing.id}"]`);
+
+    if (btn.dataset.action === 'claim') {
+      if (listing.status !== 'posted') {
+        msg.textContent = 'This listing has already been claimed.';
+        return;
+      }
+      if (!state.receiverId) {
+        msg.textContent = "Choose a receiver in 'Claiming as' first.";
+        return;
+      }
+      if (!isOpen(listing)) {
+        msg.textContent = 'The pickup window has closed.';
+        return;
+      }
+      listing.status = 'claimed';
+      listing.history.push({ step: 'claimed', by: findById(RECEIVERS, state.receiverId).name, at: Date.now() });
+    } else if (VOLUNTEER_ACTIONS[btn.dataset.action]) {
+      const { from, to } = VOLUNTEER_ACTIONS[btn.dataset.action];
+      if (!state.volunteerId) {
+        msg.textContent = "Choose a volunteer in 'Volunteering as' first.";
+        return;
+      }
+      if (listing.status !== from) {
+        msg.textContent = 'This listing is not at the right step for that action.';
+        return;
+      }
+      listing.status = to;
+      listing.history.push({ step: to, by: findById(VOLUNTEERS, state.volunteerId).name, at: Date.now() });
+    }
+    render();
+  });
+
+  render();
