@@ -30,6 +30,15 @@
   .status { font-weight: 600; color: #555; }
   .primary { background: #2e7d4f; color: #fff; border: none; border-radius: 4px; padding: 8px 14px; cursor: pointer; font: inherit; margin-top: 4px; }
   .primary:hover { background: #256640; }
+  .badge { display: inline-block; color: #fff; font-size: 0.78rem; font-weight: 600; padding: 2px 10px; border-radius: 999px; margin-bottom: 6px; }
+  .badge.posted { background: #1e63c6; }
+  .badge.claimed { background: #b26a00; }
+  .badge.collected { background: #6b3fa0; }
+  .badge.delivered { background: #2e7d4f; }
+  .badge.expired { background: #6b6b6b; }
+  .timeline { list-style: none; margin: 8px 0 0; padding: 0 0 0 10px; border-left: 2px solid #ddd; font-size: 0.85rem; }
+  .timeline li { padding: 2px 0; }
+  .timeline li.pending { color: #999; }
   footer { background: #e3ebe4; padding: 12px 24px; text-align: center; font-size: 0.9rem; }
 </style>
 </head>
@@ -66,6 +75,14 @@
   const HOUR = 60 * 60 * 1000;
   const MIN = 60 * 1000;
   const ALLERGENS = ['nuts', 'dairy', 'gluten', 'eggs', 'soy', 'none'];
+  // Listing status flow: posted -> claimed -> collected -> delivered ('expired' is derived, never stored).
+  const STEPS = ['posted', 'claimed', 'collected', 'delivered'];
+  const STATUS_LABELS = { posted: 'Posted', claimed: 'Claimed', collected: 'Collected', delivered: 'Delivered', expired: 'Expired' };
+  // Volunteer actions: the listing status each one requires and sets.
+  const VOLUNTEER_ACTIONS = {
+    collect: { from: 'claimed', to: 'collected', label: 'Mark collected' },
+    deliver: { from: 'collected', to: 'delivered', label: 'Mark delivered' },
+  };
 
   // Scores one receiver for one listing, each component in 0..1, combined to 0..100.
   function scoreMatch(listing, receiver) {
@@ -109,6 +126,14 @@
     { id: 5, name: 'Asha Seva Samiti', kind: 'NGO', location: { grid: 'H5', x: 8, y: 5 }, capacity: 40, need: 1 },
   ];
 
+  // Sample volunteers for the "Volunteering as" selector.
+  const VOLUNTEERS = [
+    { id: 1, name: 'Asha Menon' },
+    { id: 2, name: 'Rohan Iyer' },
+    { id: 3, name: 'Meera Kapoor' },
+    { id: 4, name: 'Vikram Shah' },
+  ];
+
   // Pickup times are offsets from Date.now() at load; negative = already past.
   function sampleListings() {
     const now = Date.now();
@@ -131,8 +156,9 @@
       pickupBy: now + s.offset,
       allergens: s.allergens,
       storageNote: s.storageNote,
-      claimedBy: null,
-      volunteered: false,
+      status: 'posted',
+      history: [],
+      postedAt: now - (10 + i * 5) * MIN,
     }));
   }
 
@@ -141,6 +167,7 @@
     listings: sampleListings(),
     nextId: 9,
     receiverId: null,
+    volunteerId: null,
   };
 
   const view = document.getElementById('view');
@@ -152,7 +179,9 @@
   const pad = (n) => String(n).padStart(2, '0');
   const findById = (list, id) => list.find((item) => item.id === id);
   const fmtLoc = (loc) => `Grid ${loc.grid} (x ${loc.x}, y ${loc.y})`;
-  const isOpen = (l) => !l.claimedBy && l.pickupBy > Date.now();
+  const isOpen = (l) => l.status === 'posted' && l.pickupBy > Date.now();
+  // Derived display state: a posted listing past pickup time shows as expired (status is not changed).
+  const displayStatus = (l) => (l.status === 'posted' && l.pickupBy <= Date.now() ? 'expired' : l.status);
 
   function formatLeft(ms) {
     const totalSec = Math.floor(ms / 1000);
@@ -162,10 +191,23 @@
     return `${h}h ${pad(m)}m ${pad(s)}s left`;
   }
 
-  function statusText(l) {
-    if (l.claimedBy) return `Claimed by ${esc(findById(RECEIVERS, l.claimedBy).name)}`;
-    if (l.volunteered) return 'Volunteer picking up';
-    return 'Unclaimed';
+  function badgeHtml(l) {
+    const s = displayStatus(l);
+    return `<span class="badge ${s}">${STATUS_LABELS[s]}</span>`;
+  }
+
+  // Ordered steps with time and name; steps not yet reached show as pending.
+  function timelineHtml(l) {
+    const donor = findById(DONORS, l.donorId);
+    const reached = { posted: { at: l.postedAt, by: donor.name } };
+    l.history.forEach((h) => { reached[h.step] = h; });
+    const items = STEPS.map((step) => {
+      const r = reached[step];
+      if (!r) return `<li class="pending">${STATUS_LABELS[step]}</li>`;
+      const time = new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `<li>${STATUS_LABELS[step]} &middot; ${esc(time)} &middot; ${esc(r.by)}</li>`;
+    }).join('');
+    return `<ol class="timeline">${items}</ol>`;
   }
 
   function formatHoursLeft(hours) {
@@ -190,10 +232,11 @@
 
   function listingCard(l, actionHtml) {
     const donor = findById(DONORS, l.donorId);
-    // Matches only for open listings; closed or already-volunteered ones show none.
-    const matches = isOpen(l) && !l.volunteered ? matchesHtml(l) : '';
+    // Matches only for open listings; closed or claimed ones show none.
+    const matches = isOpen(l) ? matchesHtml(l) : '';
     return `
       <article class="card">
+        ${badgeHtml(l)}
         <h3>${esc(l.foodType)} &mdash; ${esc(l.quantity)} ${esc(l.unit)}</h3>
         <p>From ${esc(donor.name)} (${esc(donor.kind)})</p>
         <p>${esc(fmtLoc(donor.location))}</p>
@@ -201,7 +244,7 @@
         ${l.storageNote ? `<p>Storage: ${esc(l.storageNote)}</p>` : ''}
         <p>Pickup by ${esc(new Date(l.pickupBy).toLocaleString())}</p>
         <p><span class="countdown" data-deadline="${l.pickupBy}"></span></p>
-        <p class="status">${statusText(l)}</p>
+        ${timelineHtml(l)}
         ${matches}
         ${actionHtml}
       </article>`;
@@ -255,7 +298,7 @@
     const options = RECEIVERS.map((r) => `<option value="${r.id}"${r.id === state.receiverId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
     const cards = state.listings.map((l) => {
       const action = isOpen(l)
-        ? `<button class="primary" data-action="claim" data-id="${l.id}">Claim</button>`
+        ? `<button class="primary" data-action="claim" data-id="${l.id}">Claim</button><span class="error" data-msg-for="${l.id}"></span>`
         : '';
       return listingCard(l, action);
     }).join('');
@@ -264,22 +307,29 @@
         <label>Claiming as
           <select id="receiver-select"><option value="">Choose a receiver&hellip;</option>${options}</select>
         </label>
-        <span class="error" id="claim-msg"></span>
       </section>
       <div class="grid">${cards}</div>`;
   }
 
   function renderVolunteer() {
+    const volOptions = VOLUNTEERS.map((v) => `<option value="${v.id}"${v.id === state.volunteerId ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
     const cards = state.listings
-      .filter((l) => isOpen(l))
+      .filter((l) => l.status !== 'posted')
       .map((l) => {
-        const action = l.volunteered
-          ? ''
-          : `<button class="primary" data-action="volunteer" data-id="${l.id}">Volunteer picking up</button>`;
-        return listingCard(l, action);
+        const action = Object.keys(VOLUNTEER_ACTIONS).find((k) => VOLUNTEER_ACTIONS[k].from === l.status);
+        const button = action
+          ? `<button class="primary" data-action="${action}" data-id="${l.id}">${VOLUNTEER_ACTIONS[action].label}</button><span class="error" data-msg-for="${l.id}"></span>`
+          : '';
+        return listingCard(l, button);
       })
       .join('');
-    return `<div class="grid">${cards || '<p>No open listings right now.</p>'}</div>`;
+    return `
+      <section class="card">
+        <label>Volunteering as
+          <select id="volunteer-select"><option value="">Choose a volunteer&hellip;</option>${volOptions}</select>
+        </label>
+      </section>
+      <div class="grid">${cards || '<p>No listings ready to collect or deliver right now.</p>'}</div>`;
   }
 
   const VIEWS = { donor: renderDonor, receiver: renderReceiver, volunteer: renderVolunteer };
@@ -340,8 +390,9 @@
       pickupBy,
       allergens: allergens.length ? allergens : ['none'],
       storageNote: data.get('storageNote').trim(),
-      claimedBy: null,
-      volunteered: false,
+      status: 'posted',
+      history: [],
+      postedAt: Date.now(),
     });
     render();
   }
@@ -363,6 +414,9 @@
     if (e.target.id === 'receiver-select') {
       state.receiverId = Number(e.target.value) || null;
     }
+    if (e.target.id === 'volunteer-select') {
+      state.volunteerId = Number(e.target.value) || null;
+    }
   });
 
   view.addEventListener('click', (e) => {
@@ -370,16 +424,35 @@
     if (!btn) return;
     const listing = findById(state.listings, Number(btn.dataset.id));
     if (!listing) return;
+    const msg = view.querySelector(`[data-msg-for="${listing.id}"]`);
 
     if (btn.dataset.action === 'claim') {
-      const msg = document.getElementById('claim-msg');
-      if (!state.receiverId) {
-        msg.textContent = 'Choose a receiver first.';
+      if (listing.status !== 'posted') {
+        msg.textContent = 'This listing has already been claimed.';
         return;
       }
-      listing.claimedBy = state.receiverId;
-    } else if (btn.dataset.action === 'volunteer') {
-      listing.volunteered = true;
+      if (!state.receiverId) {
+        msg.textContent = "Choose a receiver in 'Claiming as' first.";
+        return;
+      }
+      if (!isOpen(listing)) {
+        msg.textContent = 'The pickup window has closed.';
+        return;
+      }
+      listing.status = 'claimed';
+      listing.history.push({ step: 'claimed', by: findById(RECEIVERS, state.receiverId).name, at: Date.now() });
+    } else if (VOLUNTEER_ACTIONS[btn.dataset.action]) {
+      const { from, to } = VOLUNTEER_ACTIONS[btn.dataset.action];
+      if (!state.volunteerId) {
+        msg.textContent = "Choose a volunteer in 'Volunteering as' first.";
+        return;
+      }
+      if (listing.status !== from) {
+        msg.textContent = 'This listing is not at the right step for that action.';
+        return;
+      }
+      listing.status = to;
+      listing.history.push({ step: to, by: findById(VOLUNTEERS, state.volunteerId).name, at: Date.now() });
     }
     render();
   });
