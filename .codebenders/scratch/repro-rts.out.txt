@@ -1,0 +1,31 @@
+== R1 reseed on load
+load error: null
+listings after load: [{"id":100,"status":"claimed","sample":false,"hist":1},{"id":102,"status":"claimed","sample":true,"hist":1},{"id":200,"status":"posted","sample":true,"hist":0},{"id":201,"status":"posted","sample":true,"hist":0},{"id":202,"status":"posted","sample":true,"hist":0},{"id":203,"status":"posted","sample":true,"hist":0},{"id":204,"status":"posted","sample":true,"hist":0},{"id":205,"status":"posted","sample":true,"hist":0},{"id":206,"status":"posted","sample":true,"hist":0},{"id":207,"status":"posted","sample":true,"hist":0}]
+saved listing ids: 100,102,200,201,202,203,204,205,206,207
+== R2 donor submit, pickup in the past
+saved R2 listings: []
+field errors: [["foodType",""],["quantity",""],["consumeWithinHours",""],["pickupBy","Pickup-by time must be in the future."]]
+localStorage has R2 listing: false
+== R2 donor submit, pickup in 2h (control)
+saved R2 listings: [{"minutesFromNow":119}]
+field errors: [["foodType",""],["quantity",""],["consumeWithinHours",""],["pickupBy",""]]
+localStorage has R2 listing: true
+== R2 donor submit, pickup after eat-by (control)
+saved R2 listings: []
+field errors: [["foodType",""],["quantity",""],["consumeWithinHours",""],["pickupBy","Pickup-by time must be no later than the eat-by time (posted time plus consume-within hours). Choose an earlier pickup-by time, or a food category with a longer window."]]
+localStorage has R2 listing: false
+== R3 posted listing passes pickupBy while page open
+at load:        expired-now: false | badge: posted | claim button: true
+countdown ticks run: 5
+after 3.5s:     expired-now: true | badge: undefined | claim button: false
+after render():  expired-now: true | badge: undefined | claim button: false
+== R4 A donorId 99, receiver account
+load error: none
+== R4 B donorId 99, overview account
+load error: none
+== R4 C donorId 99, donor account (control)
+load error: none
+== R4 D history step "teleported", donor account
+load error: none
+== R4 E history entry null, donor account
+load error: none

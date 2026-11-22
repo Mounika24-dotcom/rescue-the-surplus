@@ -26,6 +26,8 @@
   form label { display: block; margin-bottom: 10px; font-weight: 600; font-size: 0.92rem; }
   input[type=text], input[type=number], input[type=datetime-local], select { width: 100%; padding: 8px; margin-top: 4px; border: 1px solid #bbb; border-radius: 4px; font: inherit; }
   .row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  .row > * { min-width: 0; }
+  @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
   fieldset { border: 1px solid #ddd; border-radius: 4px; margin: 0 0 10px; padding: 8px 12px; }
   fieldset label { display: inline-block; font-weight: normal; margin-right: 12px; }
   .error { display: block; color: #b00020; font-size: 0.82rem; min-height: 1em; font-weight: 400; }
@@ -851,7 +853,7 @@ mapCenterKey: null,
 
   // All monthly figures in one place, so every card uses the same numbers.
   function businessModel() {
-    const donors = bizValue('payingDonors');
+    const donors = Math.round(bizValue('payingDonors'));
     const fee = bizValue('monthlyFee');
     const perWeek = bizValue('listingsPerWeek');
     const perListing = bizValue('mealsPerListing');
@@ -977,7 +979,7 @@ mapCenterKey: null,
     const inputs = fields.map((f) => `
           <div class="assumption">
             <label>${esc(f.label)}
-              <input type="number" step="any" min="0"${f.key === 'sponsoredShare' ? ' max="100"' : ''} value="${esc(BUSINESS_INPUTS[f.key])}" data-business="${f.key}">
+              <input type="number" step="${f.key === 'payingDonors' ? '1' : 'any'}" min="0"${f.key === 'sponsoredShare' ? ' max="100"' : ''} value="${esc(BUSINESS_INPUTS[f.key])}" data-business="${f.key}">
             </label>
             <p class="note">assumption</p>
           </div>`).join('');
@@ -1321,8 +1323,18 @@ mapCenterKey: null,
 
   const VIEWS = { donor: renderDonor, receiver: renderReceiver, volunteer: renderVolunteer, impact: renderImpact, business: renderBusiness, map: renderMap };
 
+  // Posted listings whose pickup-by time has already been seen as passed.
+  const seenExpired = new Set();
+  // Returns true once for each posted listing whose pickup-by time passes, so the interval can re-render and show Expired.
   function tickCountdowns() {
     const now = Date.now();
+    let expiredNow = false;
+    state.listings.forEach((l) => {
+      if (l.status === 'posted' && l.pickupBy <= now && !seenExpired.has(l.id)) {
+        seenExpired.add(l.id);
+        expiredNow = true;
+      }
+    });
     // Drop match blocks once their pickup window has passed, without a full re-render.
     document.querySelectorAll('[data-match-until]').forEach((el) => {
       if (Number(el.dataset.matchUntil) <= now) el.remove();
@@ -1332,6 +1344,7 @@ mapCenterKey: null,
       el.textContent = left <= 0 ? (el.dataset.closedText || 'Pickup window closed') : formatLeft(left);
       el.classList.toggle('closed', left <= 0);
     });
+    return expiredNow;
   }
 
   // Sign-in gate shown when no account is chosen: three role cards, each with a sample-account picker and a Continue button.
@@ -1459,7 +1472,7 @@ mapCenterKey: null,
       if (mapInstance) mapInstance.invalidateSize();
     }
     tickCountdowns();
-    timer = setInterval(tickCountdowns, 1000);
+    timer = setInterval(() => { if (tickCountdowns()) render(); }, 1000);
   }
 
   // Keeps the Leaflet map sized to its panel when the window changes width. The script runs once, so this listener is added once.
@@ -1482,6 +1495,7 @@ mapCenterKey: null,
       quantity: quantity > 0 ? '' : 'Quantity must be greater than 0.',
       consumeWithinHours: consumeWithin > 0 ? '' : 'Consume-within hours must be greater than 0.',
       pickupBy: !pickupValue || Number.isNaN(pickupBy) ? 'Pickup-by time is required.'
+        : pickupBy <= Date.now() ? 'Pickup-by time must be in the future.'
         : consumeWithin > 0 && pickupBy > eatBy
           ? 'Pickup-by time must be no later than the eat-by time (posted time plus consume-within hours). Choose an earlier pickup-by time, or a food category with a longer window.'
           : '',
@@ -1577,7 +1591,8 @@ mapCenterKey: null,
       // Blank or negative inputs count as 0 in the calculations; the typed value stays in the box.
       // sponsoredShare is clamped to 0-100 inside businessModel().
       const v = Number(e.target.value);
-      const next = v > 0 ? v : 0;
+      const rounded = bizKey === 'payingDonors' ? Math.round(v) : v;
+      const next = rounded > 0 ? rounded : 0;
       const changed = BUSINESS_INPUTS[bizKey] !== next;
       BUSINESS_INPUTS[bizKey] = next;
       if (changed) saveState();
@@ -1651,11 +1666,15 @@ mapCenterKey: null,
 
   const isNonNegNumber = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
   const isPositiveNumber = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  const isHistoryEntry = (h) => !!h && typeof h === 'object'
+    && ['claimed', 'collected', 'delivered'].includes(h.step)
+    && (typeof h.at === 'string' || typeof h.at === 'number') && typeof h.by === 'string';
   const isListingShape = (l) => !!l && typeof l === 'object'
-    && Number.isFinite(l.id) && Number.isFinite(l.donorId) && typeof l.foodType === 'string'
+    && Number.isFinite(l.id) && Number.isFinite(l.donorId) && DONORS.some((d) => d.id === l.donorId)
+    && typeof l.foodType === 'string'
     && Number.isFinite(l.quantity) && typeof l.unit === 'string' && Number.isFinite(l.pickupBy)
     && Number.isFinite(l.postedAt) && STEPS.includes(l.status)
-    && Array.isArray(l.history) && Array.isArray(l.allergens);
+    && Array.isArray(l.history) && l.history.every(isHistoryEntry) && Array.isArray(l.allergens);
 
   // Writes the persisted state. A failed write is logged and the app keeps working.
   function saveState() {
@@ -1672,25 +1691,35 @@ mapCenterKey: null,
     }
   }
 
+  // Removes saved data that failed validation, so the next load starts from sample data.
+  function discardSaved() {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (err) {
+      console.warn('Rescue the Surplus: could not clear invalid saved data.', err);
+    }
+    return null;
+  }
+
   // Returns valid saved state, or null when nothing is saved, the data is malformed, or storage fails.
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw === null) return null;
       const data = JSON.parse(raw);
-      if (!data || typeof data !== 'object' || !Array.isArray(data.listings)) return null;
-      if (!data.listings.every(isListingShape)) return null;
-      if (!Number.isInteger(data.nextId) || data.nextId < 1) return null;
+      if (!data || typeof data !== 'object' || !Array.isArray(data.listings)) return discardSaved();
+      if (!data.listings.every(isListingShape)) return discardSaved();
+      if (!Number.isInteger(data.nextId) || data.nextId < 1) return discardSaved();
       const impact = data.impact;
-      if (!impact || !isPositiveNumber(impact.kgPerMeal) || !isPositiveNumber(impact.co2PerKg)) return null;
+      if (!impact || !isPositiveNumber(impact.kgPerMeal) || !isPositiveNumber(impact.co2PerKg)) return discardSaved();
       const business = data.business;
-      if (!business || typeof business !== 'object') return null;
+      if (!business || typeof business !== 'object') return discardSaved();
       const businessValues = {};
       for (const key of Object.keys(DEFAULT_BUSINESS)) {
-        if (!isNonNegNumber(business[key])) return null;
+        if (!isNonNegNumber(business[key])) return discardSaved();
         businessValues[key] = business[key];
       }
-      if (typeof data.businessCity !== 'string') return null;
+      if (typeof data.businessCity !== 'string') return discardSaved();
       const maxId = data.listings.reduce((m, l) => Math.max(m, l.id), 0);
       return {
         listings: data.listings,
@@ -1701,7 +1730,7 @@ mapCenterKey: null,
       };
     } catch (err) {
       console.warn('Rescue the Surplus: saved data could not be loaded; using sample data.', err);
-      return null;
+      return discardSaved();
     }
   }
 
@@ -1741,11 +1770,13 @@ mapCenterKey: null,
       const samples = state.listings.filter((l) => l.sample === true && l.status === 'posted');
       if (samples.length === 0) return;
       if (samples.some((l) => l.pickupBy > Date.now())) return;
-      const userListings = state.listings.filter((l) => l.sample !== true);
-      const fresh = sampleListings().concat(sampleDeliveredListings());
+      // Only untouched, expired open sample listings are replaced; everything else is kept exactly as saved.
+      const isExpiredOpenSample = (l) => l.sample === true && l.status === 'posted' && l.pickupBy <= Date.now() && l.history.length === 0;
+      const keptListings = state.listings.filter((l) => !isExpiredOpenSample(l));
+      const fresh = sampleListings().filter((l) => l.status === 'posted');
       let nextId = state.nextId;
       for (const l of fresh) l.id = nextId++;
-      state.listings = [...userListings, ...fresh];
+      state.listings = [...keptListings, ...fresh];
       state.nextId = nextId;
       saveState();
     } catch (err) {
