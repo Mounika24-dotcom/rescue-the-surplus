@@ -1,6 +1,7 @@
-# Rescue the Surplus
+# FoodBridge Hyderabad
 
-**ACE Builders Hackathon 2026 | Problem Statement 2: Society and Environment**
+
+**ACE Builders Hackathon 2026 | Problem Statement 2: Rescue the Surplus**
 
 Live app: https://mounika24-dotcom.github.io/rescue-the-surplus/rescue-the-surplus/
 Built by: Mounika Yegireddi (solo)
