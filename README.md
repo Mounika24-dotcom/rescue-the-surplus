@@ -50,3 +50,9 @@ Food donors pay a monthly subscription for listing tools and impact reports, CSR
 
 ## Run it
 Open `index.html` in a browser. The map needs an internet connection.
+
+## Third-party components and sources
+- Leaflet (open-source mapping library, BSD-2-Clause licence)
+- Map data © OpenStreetMap contributors (ODbL), tiles from OpenStreetMap
+- Impact assumptions: WRAP meal conversion (420 g per meal) and WRAP via the UK Government Office for Science (about 4 kg CO2e avoided per kg of food waste prevented). Indicative figures, cited for context only.
+- No other libraries, datasets or images are used. All organisations, people and locations are fictional sample data.
