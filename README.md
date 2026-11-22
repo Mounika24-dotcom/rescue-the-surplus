@@ -2,8 +2,8 @@
 
 **ACE Builders Hackathon 2026 | Problem Statement 2: Society and Environment**
 
-Live app: [PASTE YOUR GITHUB PAGES LINK]
-Built by: [YOUR NAME] (solo)
+Live app: https://mounika24-dotcom.github.io/rescue-the-surplus/rescue-the-surplus/
+Built by: Mounika Yegireddi (solo)
 
 ## The problem
 Caterers, function halls and event kitchens throw away edible food every day, while NGOs and community kitchens nearby go short. Good intentions exist on both sides, but there is no fast, reliable way to connect surplus food with people who need it before it spoils.
